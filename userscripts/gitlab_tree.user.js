@@ -12,8 +12,7 @@
     if (!$("body").attr("data-find-file")) {
         return;
     }
-    var private_token,
-        project_id,
+    var project_id,
         repository_ref,
         apiRepoTree,
         apiProjects,
@@ -53,7 +52,6 @@
             Vue.set(model, 'children', [])
             Vue.set(model, 'open', true)
             $.get(apiRepoTree, {
-                private_token: private_token,
                 id: project_id,
                 path: model.path,
                 ref_name: repository_ref
@@ -167,7 +165,6 @@
                         if (!("children" in this.model)) {
                             var _this = this;
                             $.get(apiRepoTree, {
-                                private_token: private_token,
                                 id: project_id,
                                 path: this.model.path,
                                 ref_name: repository_ref
@@ -208,7 +205,6 @@
                 }
                 var _this = this;
                 $.get(apiRepoTree, {
-                    private_token: private_token,
                     id: project_id,
                     ref_name: repository_ref
                 })
