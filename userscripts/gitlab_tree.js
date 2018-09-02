@@ -1,11 +1,8 @@
 // ==UserScript==
-// @name         New Userscript
-// @namespace    http://tampermonkey.net/
+// @name         gitlab tree
 // @version      0.1
-// @description  try to take over the world!
-// @author       You
+// @description  gitlab tree
 // @match        *://gitlab.**.com/*
-// @grant        none
 // ==/UserScript==
 
 (function () {
