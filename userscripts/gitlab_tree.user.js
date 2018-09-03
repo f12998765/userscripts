@@ -3,7 +3,7 @@
 // @version      0.1
 // @author        xizero
 // @description  gitlab tree
-// @match        *://gitlab.**.com/*
+// @include        *://gitlab.*.com/*
 // ==/UserScript==
 
 (function () {
