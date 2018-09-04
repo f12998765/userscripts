@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         gitlab tree
-// @version      0.1
+// @version      0.2
 // @author        xizero
 // @description  gitlab tree
 // @include        *://gitlab.*.com/*
@@ -10,6 +10,10 @@
     'use strict';
     // Your code here...
     if (!$("body").attr("data-find-file")) {
+        return;
+    }
+    var page = $("body").attr("data-page");
+    if(!(page=="projects:show"||page=="projects:tree:show"||page=="projects:blob:show")){
         return;
     }
     var project_id,
