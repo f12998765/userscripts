@@ -100,7 +100,7 @@
                     overflow :auto;
                     position: fixed;
                     top: auto;
-                    left: auto;
+                    left: 50px;
                 }
             </style>`
         );
