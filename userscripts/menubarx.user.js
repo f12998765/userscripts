@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MenubarX WebAppList Editor
 // @namespace    http://tampermonkey.net/
-// @version      0.2
+// @version      0.3
 // @description  修改 MenubarX 的 WebAppList，支持导入导出、远程更新功能，美化界面
 // @author       Your name
 // @match        https://menubarx.app/search/*
@@ -17,6 +17,52 @@
 
 (function() {
     'use strict';
+
+    function modifyLinks() {
+        const links = document.getElementsByTagName('a');
+        for (let link of links) {
+            try {
+                const url = new URL(link.href);
+                if (url.pathname === '/openself/' && url.searchParams.has('xurl')) {
+                    link.href = decodeURIComponent(url.searchParams.get('xurl'));
+                }
+            } catch(e) {
+                continue;
+            }
+        }
+    }
+
+    // 在DOM加载完成后执行一次
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', modifyLinks);
+    } else {
+        modifyLinks();
+    }
+
+    // 监听DOM变化，处理动态添加的链接
+    const observer = new MutationObserver(modifyLinks);
+    observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+    });
+
+    // 处理中键点击事件
+    document.addEventListener('click', function(e) {
+        if (e.button === 1) {
+            e.preventDefault();
+            if (e.target.tagName === 'A' || e.target.closest('a')) {
+                const link = e.target.tagName === 'A' ? e.target : e.target.closest('a');
+                window.open(link.href, '_blank');
+            }
+        }
+    }, true);
+
+    // 阻止中键的额外事件
+    document.addEventListener('auxclick', function(e) {
+        if (e.button === 1) {
+            e.preventDefault();
+        }
+    }, true);
 
     // 添加自定义样式
     const customStyle = `
