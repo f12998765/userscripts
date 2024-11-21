@@ -17,53 +17,68 @@
 
 (function() {
     'use strict';
+    
+    // 跟踪鼠标按下状态
+    let isMiddleButtonDown = false;
+    let middleClickTarget = null;
 
-    function modifyLinks() {
-        const links = document.getElementsByTagName('a');
-        for (let link of links) {
-            try {
-                const url = new URL(link.href);
-                if (url.pathname === '/openself/' && url.searchParams.has('xurl')) {
-                    link.href = decodeURIComponent(url.searchParams.get('xurl'));
-                }
-            } catch(e) {
-                continue;
-            }
-        }
-    }
-
-    // 在DOM加载完成后执行一次
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', modifyLinks);
-    } else {
-        modifyLinks();
-    }
-
-    // 监听DOM变化，处理动态添加的链接
-    const observer = new MutationObserver(modifyLinks);
-    observer.observe(document.body || document.documentElement, {
-        childList: true,
-        subtree: true
-    });
-
-    // 处理中键点击事件
-    document.addEventListener('click', function(e) {
-        if (e.button === 1) {
-            e.preventDefault();
-            if (e.target.tagName === 'A' || e.target.closest('a')) {
-                const link = e.target.tagName === 'A' ? e.target : e.target.closest('a');
-                window.open(link.href, '_blank');
+    document.addEventListener('mousedown', function(e) {
+        if (e.button === 1) {  // 中键按下
+            isMiddleButtonDown = true;
+            const appElement = e.target.closest('.app');
+            if (appElement) {
+                middleClickTarget = appElement;
+                e.preventDefault();
+                e.stopPropagation();
             }
         }
     }, true);
 
-    // 阻止中键的额外事件
+    document.addEventListener('mouseup', function(e) {
+        if (e.button === 1 && isMiddleButtonDown && middleClickTarget) {  // 中键释放
+            const realUrl = middleClickTarget.getAttribute('data-url');
+            if (realUrl) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(realUrl, '_blank', 'noopener,noreferrer');
+            }
+        }
+        // 重置状态
+        isMiddleButtonDown = false;
+        middleClickTarget = null;
+    }, true);
+
+    // 阻止 auxclick 的默认行为
     document.addEventListener('auxclick', function(e) {
-        if (e.button === 1) {
+        if (e.button === 1 && e.target.closest('.app')) {
             e.preventDefault();
+            e.stopPropagation();
         }
     }, true);
 
+    // 处理左键点击，只在 mousedown 时处理
+    document.addEventListener('mousedown', function(e) {
+        if (e.button === 0) {  // 左键
+            const appElement = e.target.closest('.app');
+            if (appElement) {
+                e.preventDefault();
+                e.stopPropagation();
+                const realUrl = appElement.getAttribute('data-url');
+                if (realUrl) {
+                    window.open(realUrl, '_blank').focus();
+                }
+            }
+        }
+    }, true);
+
+    // 阻止左键点击的其他事件
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('.app')) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);
+    
     // 添加自定义样式
     const customStyle = `
         /* 隐藏滚动条但保持滚动功能 */
