@@ -5,34 +5,22 @@
 // @description  自动完成 Steam 探索队列
 // @author       zero
 // @match        https://store.steampowered.com/*
-// @grant        none
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // 创建菜单按钮
-    function createMenuItem() {
-        const menuItem = document.createElement('div');
-        menuItem.innerHTML = '开始自动探索';
-        menuItem.style.cursor = 'pointer';
-        menuItem.style.padding = '10px';
-        menuItem.style.backgroundColor = '#1b2838';
-        menuItem.style.color = '#fff';
-        menuItem.onclick = _exec;
-        
-        // 添加到页面
-        document.body.appendChild(menuItem);
-    }
+    // 注册油猴扩展菜单命令
+    GM_registerMenuCommand("开始自动探索", _exec, "S");
 
-    // 主要执行函数
     function _exec() {
         var appids, 
             running = true, 
             queueNumber, 
             progressDialog = ShowAlertDialog('探索中', $J('<div/>').append($J('<div/>', {'class': 'waiting_dialog_throbber'}) ).append( $J('<div/>', {'id': 'progressContainer'}).text('获取进度...') ), '停止').done(abort);
-        
-        // ... 原有代码的其他函数保持不变 ...
+
+        // ... 其余代码保持不变 ...
         function abort(){
             running = false;
             progressDialog.Dismiss();
@@ -83,7 +71,4 @@
 
         beginQueue();
     }
-
-    // 创建菜单项
-    createMenuItem();
 })();
