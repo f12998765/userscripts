@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Pake 风格 Twitter 精简
 // @namespace    https://github.com/tw93/Pake
-// @version      1.0.0
-// @description  还原 Pake 原始 Twitter 样式，仅将时间线宽度固定为 800px
+// @version      1.0.2
+// @description  还原 Pake 原始 Twitter 样式，固定时间线 800px，并彻底修复竖屏视频被截断的问题
 // @author       Pake (tw93) / 油猴提取
 // @match        https://twitter.com/*
 // @match        https://x.com/*
@@ -54,7 +54,8 @@
     /* ========== 桌面端布局（Pake 原始 + 时间线 800px） ========== */
     @media only screen and (min-width: 1000px) {
       #react-root main[role="main"] {
-        align-items: center !important;
+        /* safe center 确保内容超长时可正常滚动，不会被顶部裁剪 */
+        align-items: safe center !important;
         overflow-x: clip !important;
       }
 
@@ -135,6 +136,48 @@
         position: fixed !important;
         right: 16px !important;
         bottom: 24px !important;
+      }
+
+      /* ========== 🌟 强化修复：竖屏视频被截断的问题 ========== */
+      
+      /* 1. 强制解除视频播放器及预览图容器的高度限制（覆盖原生及内联样式） */
+      #react-root [data-testid="videoPlayer"],
+      #react-root [data-testid="videoPlayer"] > div,
+      #react-root [data-testid="previewInterstitial"],
+      #react-root [data-testid="previewInterstitial"] > div,
+      #react-root [data-testid="tweetPhoto"],
+      #react-root [data-testid="tweetPhoto"] > div {
+        max-height: none !important;
+        height: auto !important;
+        aspect-ratio: auto !important; /* 防止原生 aspect-ratio 强制压缩高度 */
+      }
+
+      /* 2. 确保 video 和 img 标签本身按实际比例完整显示，不被裁剪 */
+      #react-root [data-testid="videoPlayer"] video,
+      #react-root [data-testid="previewInterstitial"] img,
+      #react-root [data-testid="tweetPhoto"] img,
+      #react-root video {
+        max-height: none !important;
+        height: auto !important;
+        width: 100% !important;
+        object-fit: contain !important; /* 确保画面完整，不被裁切 */
+      }
+
+      /* 3. 解除推文单元格及外层容器的溢出隐藏，防止长视频底部被“切掉” */
+      #react-root [data-testid="primaryColumn"] [role="article"],
+      #react-root [data-testid="primaryColumn"] [data-testid="cellInnerDiv"],
+      #react-root [data-testid="primaryColumn"] [data-testid="tweet"] {
+        overflow: visible !important;
+        max-height: none !important;
+        height: auto !important;
+      }
+
+      /* 4. 针对单条推文详情页 (Modal 弹窗或独立页面) 的特殊修复 */
+      #react-root [role="dialog"] [data-testid="videoPlayer"],
+      #react-root [role="dialog"] [data-testid="previewInterstitial"],
+      #react-root [role="dialog"] video {
+        max-height: none !important;
+        height: auto !important;
       }
     }
   `;
