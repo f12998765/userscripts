@@ -1,193 +1,312 @@
 // ==UserScript==
-// @name         Pake 风格 Twitter 精简
-// @namespace    https://github.com/tw93/Pake
-// @version      1.0.2
-// @description  还原 Pake 原始 Twitter 样式，固定时间线 800px，并彻底修复竖屏视频被截断的问题
-// @author       Pake (tw93) / 油猴提取
-// @match        https://twitter.com/*
+// @name         X 精简版(Minimal × Pake 合并)
+// @namespace    https://github.com/typefully/minimal-twitter
+// @version      1.3.0
+// @description  去广告与抽屉、侧栏悬停显示文字+图标居中+延迟淡入、时间线 800px、顶部原生固定、右上角常驻搜索栏、媒体/私信布局保护;脚本内数组配置左侧菜单显隐。纯 CSS 为主,页面加载前注入,无闪烁。
+// @author       Minimal Theme (Typefully, MIT) × Pake (tw93, GPL-3.0) 合并精简
+// @license      MIT
 // @match        https://x.com/*
+// @match        https://twitter.com/*
 // @match        https://mobile.twitter.com/*
-// @match        https://mobile.x.com/*
-// @grant        GM_addStyle
 // @run-at       document-start
-// @license      GPL-3.0
+// @noframes
+// @grant        GM_addStyle
 // ==/UserScript==
 
 (function () {
   'use strict';
 
+  /* =====================================================
+   * 配置区(按需修改,改完保存刷新即生效)
+   * ===================================================== */
+
+  // 1. 左侧栏延迟显示的秒数:避开加载初期的骨架/推广卡闪现,0 = 立即显示
+  const SIDEBAR_REVEAL_DELAY = 1;
+
+  // 2. 左侧导航菜单显隐,把 key 填进对应数组即可
+  //    可用 key:
+  //      home=主页         explore=探索      notifications=通知
+  //      messages=私信     grok=Grok        premium=Premium
+  //      lists=列表        bookmarks=书签    jobs=工作
+  //      communities=社区  articles=文章     topics=话题
+  //      verifiedOrgs=认证机构               profile=个人资料
+  //    规则:同一项同时出现在两个数组时,以「显示」为准
+  const SHOWN_ITEMS = [];                            // 强制显示
+  const HIDDEN_ITEMS = ["grok", "premium", "lists"]; // 隐藏
+
+  // 3. 额外隐藏:没有固定 key 的杂项入口,直接写选择器
+  //    (依据真实 DOM 校准:优先 data-testid / href;
+  //     中文界面的 aria-label 是中文,不要依赖英文 aria-label)
+  const EXTRA_HIDDEN_SELECTORS = [
+    // 添加关注(/i/connect_people)
+    'header[role="banner"] a[data-testid="AppTabBar_Follow_Link"]',
+    // 历史(/i/history)
+    'header[role="banner"] a[href*="/i/history"][role="link"]',
+    // 创作者工作室(/i/jf/creators/studio)
+    'header[role="banner"] a[href*="creators/studio"][role="link"]',
+    // 左上角 X Logo
+    'header[role="banner"] h1[role="heading"]',
+    // 侧栏推广/订阅入口(防止加载期闪现灰底卡片)
+    'header[role="banner"] a[href*="/i/verified-orgs-signup"][role="link"]',
+    'header[role="banner"] a[href*="supergrok"][role="link"]',
+    'header[role="banner"] a[href*="/i/grok/super"][role="link"]',
+    'header[role="banner"] a[href*="/settings/monetization"][role="link"]',
+    'header[role="banner"] a[href*="/i/premium_sign_up"][role="link"]',
+  ];
+
+  /* =====================================================
+   * 以下为实现,一般不需要改动
+   * ===================================================== */
+
+  // key → CSS 选择器(全部限定在 header[role="banner"] 内,
+  // 避免误伤时间线正文里的同类链接)
+  const SIDEBAR_SELECTORS = {
+    home: '[data-testid="AppTabBar_Home_Link"]',
+    explore: '[data-testid="AppTabBar_Explore_Link"]',
+    notifications: '[data-testid="AppTabBar_Notifications_Link"]',
+    messages: '[data-testid="AppTabBar_DirectMessage_Link"]',
+    grok: 'a[href*="grok"][role="link"][aria-label]',
+    premium: 'a[href*="premium"][role="link"][aria-label]',
+    lists: 'a[href*="/lists"][role="link"][aria-label]',
+    bookmarks: 'a[href*="bookmarks"]',
+    jobs: 'a[href*="jobs"]',
+    communities: 'a[href*="communities"]',
+    articles: 'a[href="/compose/articles"]',
+    topics: 'a[href*="topics"]',
+    verifiedOrgs: 'a[href*="verified-orgs"][role="link"][aria-label]',
+    profile: '[data-testid="AppTabBar_Profile_Link"]',
+  };
+
+  /* ---- 主样式 ---- */
+
   const css = `
-    /* ========== 隐藏推广推文 & 各类入口 ========== */
-    #react-root [data-testid="placementTracking"] article,
-    #react-root a[href*="quick_promote_web"],
-    #react-root a[href*="/lists"][role="link"][aria-label],
-    #react-root a[href*="/i/communitynotes"][role="link"][aria-label],
-    #react-root a[role="link"][aria-label="Communities"],
-    #react-root a[role="link"][aria-label="Premium"],
-    #react-root a[role="link"][aria-label="SuperGrok"],
-    #react-root a[href*="/i/verified-orgs-signup"][role="link"][aria-label] {
+    /* 1. 去广告(推广帖 / 快速推广入口) */
+    [data-testid="placementTracking"] article,
+    a[href*="quick_promote_web"] {
       display: none !important;
     }
 
-    /* ========== 隐藏抽屉 ========== */
-    #react-root [data-testid="DMDrawer"],
-    #react-root [data-testid="GrokDrawer"],
-    #react-root [data-testid="chat-drawer-root"],
-    #root > main > footer.justify-center.ease-in {
+    /* 2. 隐藏抽屉(DM 抽屉 / Grok 抽屉 / 聊天挂件) */
+    [data-testid="DMDrawer"],
+    [data-testid="chat-drawer-root"] {
       visibility: hidden !important;
     }
-
-    /* ========== 时间线主体微调 ========== */
-    #react-root [data-testid="primaryColumn"] > div > div {
-      position: relative !important;
+    [data-testid="GrokDrawer"] {
+      display: none !important;
     }
 
-    /* ========== 彻底隐藏右侧栏 ========== */
-    #react-root [data-testid="sidebarColumn"] {
-      visibility: hidden !important;
-      width: 0 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      z-index: 1 !important;
+    /* 3. 右侧栏整体隐藏,搜索栏单独浮出到右上角
+          (visibility 可被子元素覆盖,Minimal 的核心技巧) */
+    [data-testid="sidebarColumn"] {
+      visibility: hidden;
+      width: 0;
+      margin: 0;
+      padding: 0;
+      z-index: 1;
     }
-
-    /* ========== 桌面端布局（Pake 原始 + 时间线 800px） ========== */
-    @media only screen and (min-width: 1000px) {
-      #react-root main[role="main"] {
-        /* safe center 确保内容超长时可正常滚动，不会被顶部裁剪 */
-        align-items: safe center !important;
-        overflow-x: clip !important;
+    @media only screen and (min-width: 1100px) {
+      [data-testid="sidebarColumn"] form[role="search"] {
+        visibility: visible;
+        position: fixed;
+        top: 12px;
+        right: 16px;
+        width: auto;
+        z-index: 2;
       }
+      [data-testid="sidebarColumn"] form[role="search"] input[role="combobox"] {
+        width: 150px;
+      }
+      [data-testid="sidebarColumn"] form[role="search"]:focus-within {
+        width: 374px;
+        backdrop-filter: blur(12px);
+      }
+      [data-testid="sidebarColumn"] form[role="search"] input:focus {
+        width: 100% !important;
+      }
+      div[style*="left: -12px"] {
+        left: unset;
+      }
+      div[style="left: -8px; width: 306px;"] {
+        left: unset;
+        width: 374px;
+      }
+    }
 
-      #react-root [data-testid="primaryColumn"] {
+    /* 4. 时间线 800px + 居中(≥988px)
+          顶部固定依赖 X 原生 sticky,不做任何干预 */
+    @media only screen and (min-width: 988px) {
+      main[role="main"] {
+        align-items: center;
+        overflow-x: clip;
+      }
+      [data-testid="primaryColumn"] {
         width: 800px !important;
         max-width: 800px !important;
-        margin: 0 auto !important;
+        margin: 0 auto;
+      }
+      /* 内层宽度放开;排除私信容器,保护消息气泡与图片/视频布局 */
+      [data-testid="primaryColumn"] > div > div:last-child,
+      [data-testid="primaryColumn"]
+        > div
+        > div:last-child
+        div:not([data-testid="dm-message-list-container"] *) {
+        max-width: unset;
+      }
+    }
+
+    /* 5. 左侧导航:固定定位 + 图标居中 + 悬停显示文字 */
+    @media only screen and (min-width: 1000px) {
+      header[role="banner"] {
+        align-items: flex-start;
+        position: fixed;
+        left: 0;
       }
 
-      #react-root [data-testid="primaryColumn"] > div > div:last-child,
-      #react-root [data-testid="primaryColumn"] > div > div:last-child div {
-        max-width: unset !important;
-      }
-
-      #react-root div[aria-label][role="group"][id^="id__"] {
-        margin-right: 81px !important;
-      }
-
-      /* 左侧导航固定 */
-      #react-root header[role="banner"] {
-        position: fixed !important;
-        left: 0 !important;
-      }
-
-      #react-root header[role="banner"] > div > div > div {
+      /* 图标列垂直居中 */
+      header[role="banner"] > div > div > div {
         justify-content: center !important;
         padding-top: 0;
         overflow-x: hidden;
       }
 
-      #react-root form[role="search"] > div:nth-child(1) > div {
-        background-color: transparent !important;
+      /* 底部账号按钮贴齐浮动发推按钮的高度节奏 */
+      header[role="banner"] > div > div > div > div:last-child {
+        margin-bottom: 0 !important;
+      }
+      [data-testid="SideNav_AccountSwitcher_Button"] {
+        bottom: 12px;
+      }
+      /* 项目过多时可滚动,避免溢出 */
+      header[role="banner"] > div > div > div > div:first-child {
+        flex-shrink: 1;
+        overflow-y: auto;
       }
 
-      #react-root h1[role="heading"] {
-        padding-top: 4px !important;
-      }
-
-      /* 导航标签：悬停显示（Pake 原始） */
-      #react-root header[role="banner"]
-        nav[role="navigation"]
-        *
-        div[dir="auto"]:not([aria-label])
-        > span,
-      #react-root [data-testid="SideNav_AccountSwitcher_Button"] > div:not(:first-child) {
-        display: inline-block !important;
-        opacity: 0 !important;
+      /* 文字标签:默认透明占位,悬停整列时淡入 */
+      header[role="banner"] nav[role="navigation"] > * > div > div + div:last-child,
+      [data-testid="SideNav_AccountSwitcher_Button"] > div:not(:first-child) {
+        display: inline-block;
+        opacity: 0;
         transition: 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
       }
-
-      #react-root header[role="banner"]
-        nav[role="navigation"]:hover
-        *
-        div[dir="auto"]:not([aria-label])
-        > span,
-      #react-root [data-testid="SideNav_AccountSwitcher_Button"]:hover > div:not(:first-child) {
-        opacity: 1 !important;
+      header[role="banner"] nav[role="navigation"]:hover > * > div > div + div:last-child,
+      [data-testid="SideNav_AccountSwitcher_Button"]:hover > div:not(:first-child) {
+        opacity: 1;
+      }
+      /* 悬停时给整列加毛玻璃底,保证文字可读性 */
+      header[role="banner"] nav[role="navigation"]:hover > * > div {
+        backdrop-filter: blur(12px);
       }
 
-      #react-root header[role="banner"] nav[role="navigation"]:hover > * > div {
-        backdrop-filter: blur(12px) !important;
-      }
-
-      #react-root header[role="banner"] nav[role="navigation"] > a {
+      /* 扩大悬停热区:标签隐藏时右侧 40px 内也能触发(Pake 技巧) */
+      header[role="banner"] nav[role="navigation"] > a {
         position: relative;
       }
-
-      #react-root header[role="banner"] nav[role="navigation"] > a::before {
+      header[role="banner"] nav[role="navigation"] > a::before {
         content: "";
         position: absolute;
-        top: 0px;
+        top: 0;
         right: -40px;
-        bottom: 0px;
-        left: 0px;
+        bottom: 0;
+        left: 0;
       }
 
-      #react-root [data-testid="SideNav_NewTweet_Button"] {
-        position: fixed !important;
-        right: 16px !important;
-        bottom: 24px !important;
-      }
-
-      /* ========== 🌟 强化修复：竖屏视频被截断的问题 ========== */
-      
-      /* 1. 强制解除视频播放器及预览图容器的高度限制（覆盖原生及内联样式） */
-      #react-root [data-testid="videoPlayer"],
-      #react-root [data-testid="videoPlayer"] > div,
-      #react-root [data-testid="previewInterstitial"],
-      #react-root [data-testid="previewInterstitial"] > div,
-      #react-root [data-testid="tweetPhoto"],
-      #react-root [data-testid="tweetPhoto"] > div {
-        max-height: none !important;
-        height: auto !important;
-        aspect-ratio: auto !important; /* 防止原生 aspect-ratio 强制压缩高度 */
-      }
-
-      /* 2. 确保 video 和 img 标签本身按实际比例完整显示，不被裁剪 */
-      #react-root [data-testid="videoPlayer"] video,
-      #react-root [data-testid="previewInterstitial"] img,
-      #react-root [data-testid="tweetPhoto"] img,
-      #react-root video {
-        max-height: none !important;
-        height: auto !important;
-        width: 100% !important;
-        object-fit: contain !important; /* 确保画面完整，不被裁切 */
-      }
-
-      /* 3. 解除推文单元格及外层容器的溢出隐藏，防止长视频底部被“切掉” */
-      #react-root [data-testid="primaryColumn"] [role="article"],
-      #react-root [data-testid="primaryColumn"] [data-testid="cellInnerDiv"],
-      #react-root [data-testid="primaryColumn"] [data-testid="tweet"] {
-        overflow: visible !important;
-        max-height: none !important;
-        height: auto !important;
-      }
-
-      /* 4. 针对单条推文详情页 (Modal 弹窗或独立页面) 的特殊修复 */
-      #react-root [role="dialog"] [data-testid="videoPlayer"],
-      #react-root [role="dialog"] [data-testid="previewInterstitial"],
-      #react-root [role="dialog"] video {
-        max-height: none !important;
-        height: auto !important;
+      /* 发推按钮悬浮到右下角(fixed 不受父级 overflow 裁剪) */
+      [data-testid="SideNav_NewTweet_Button"] {
+        position: fixed;
+        right: 16px;
+        bottom: 24px;
       }
     }
-  `;
 
-  // 注入样式
-  if (typeof GM_addStyle !== 'undefined') {
-    GM_addStyle(css);
+    /* 6. 1000–1265px 中间断点:导航固定后补回占位,防止遮挡内容 */
+    @media only screen and (min-width: 1000px) and (max-width: 1265px) {
+      body {
+        padding-left: 88px;
+      }
+    }
+  `.trim().replace(/\n\s+/g, "\n");
+
+  /* ---- 左侧栏延迟淡入 ---- */
+
+  const revealCss =
+    SIDEBAR_REVEAL_DELAY > 0
+      ? `
+      header[role="banner"] {
+        opacity: 0;
+        animation: mt-sidebar-reveal 0.3s ease ${SIDEBAR_REVEAL_DELAY}s forwards;
+      }
+      @keyframes mt-sidebar-reveal {
+        to { opacity: 1; }
+      }
+    `.trim()
+      : "";
+
+  // document-start 阶段 <head> 尚未生成,先挂到 <html> 上防闪烁
+  if (typeof GM_addStyle === "function") {
+    GM_addStyle(css + "\n" + revealCss);
   } else {
-    const style = document.createElement('style');
-    style.textContent = css;
-    document.documentElement.appendChild(style);
+    const style = document.createElement("style");
+    style.textContent = css + "\n" + revealCss;
+    (document.head || document.documentElement).appendChild(style);
   }
+
+  /* ---- 左侧菜单隐藏(独立 style 标签,与主样式分离) ---- */
+
+  // 按配置生成隐藏规则(SHOWN_ITEMS 优先级高于 HIDDEN_ITEMS)
+  function buildSidebarHideCss() {
+    const byKey = Object.keys(SIDEBAR_SELECTORS)
+      .filter((key) => HIDDEN_ITEMS.includes(key) && !SHOWN_ITEMS.includes(key))
+      .map((key) => `header[role="banner"] ${SIDEBAR_SELECTORS[key]} { display: none !important; }`);
+    const extra = EXTRA_HIDDEN_SELECTORS.map((sel) => `${sel} { display: none !important; }`);
+    return [...byKey, ...extra].join("\n");
+  }
+
+  (function applySidebarHideCss() {
+    const el = document.createElement("style");
+    el.id = "mt-sidebar-hide";
+    el.textContent = buildSidebarHideCss();
+    (document.head || document.documentElement).appendChild(el);
+  })();
+
+  /* ---- 加载期兜底:拦截侧栏异步插入的推广/订阅卡片 ----
+   * Premium / SuperGrok 等卡片插在账号按钮上方,数据返回前
+   * 显示为灰色骨架条,几秒后被 X 自行移除。
+   * 这里在插入瞬间判定并隐藏整个块。 */
+
+  (function startPromoCardPruner() {
+    const attach = () => {
+      const header = document.querySelector('header[role="banner"]');
+      if (!header) return false;
+
+      // 判定特征:块内含推广类链接,但不是主导航的组成部分
+      // (导航里同样有 grok/premium 链接,必须排除)
+      const looksLikePromo = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const hasPromo = el.querySelector(
+          'a[href*="premium"], a[href*="grok"], a[href*="monetization"], a[href*="verified-orgs"]'
+        );
+        const isNavPiece = el.querySelector(
+          'nav[role="navigation"], [data-testid^="AppTabBar_"], [data-testid="SideNav_NewTweet_Button"], [data-testid="SideNav_AccountSwitcher_Button"]'
+        );
+        return !!hasPromo && !isNavPiece;
+      };
+
+      const observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (looksLikePromo(node)) {
+              node.style.display = "none";
+            }
+          }
+        }
+      });
+      observer.observe(header, { childList: true, subtree: true });
+      return true;
+    };
+
+    if (!attach()) {
+      document.addEventListener("DOMContentLoaded", attach, { once: true });
+    }
+  })();
 })();
