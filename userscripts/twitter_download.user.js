@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter 媒体下载
-// @version      0.0.1
-// @description  下载 X/Twitter 图片、视频、GIF，视频可转换为 GIF（10fps 流畅，最长 20 秒，自适应分辨率）
+// @version      0.0.4
+// @description  下载 X/Twitter 图片、视频、GIF，视频可转换为 GIF（10fps 流畅，最长 20 秒，自适应分辨率），GIF 转换进度以右下角圆环显示
 // @license      MIT
 // @match        https://twitter.com/*
 // @match        https://x.com/*
@@ -11,8 +11,10 @@
 // @connect      pbs.twimg.com
 // @connect      video.twimg.com
 // @connect      cdn.jsdelivr.net
+// @connect      raw.githubusercontent.com
 // @grant        GM_xmlhttpRequest
 // @require      https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js
+// @require      https://raw.githubusercontent.com/f12998765/widgets/refs/heads/main/RingProgress.js
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -26,11 +28,95 @@
     //  常量
     // ============================================================
     const WORKER_URL = 'https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js';
-    const MAX_DURATION = 20;           // 最长转换秒数，10fps 下总帧数 200
-    const FRAME_BUDGET = 200;          // 总帧数上限
+    const MAX_DURATION = 20;
+    const FRAME_BUDGET = 200;
+    const GIF_TIMEOUT = 180000;
+    const SEEK_TIMEOUT = 3000;
 
     // ============================================================
-    //  Worker 脚本加载（绕过 CSP：GM 拉取 → Blob URL）
+    //  进度圆环（右侧往上）
+    // ============================================================
+    const RING_SIZE = 110;
+    const RING_RIGHT = 24;      // 距右侧
+    const RING_BOTTOM = 120;    // 距底部（往上至少 100px）
+
+    const ringStyle = document.createElement('style');
+    ringStyle.textContent = `
+        .tmd-ring .grp-btn {
+            left: auto !important;
+            top: auto !important;
+            right: ${RING_RIGHT}px !important;
+            bottom: ${RING_BOTTOM}px !important;
+            transform: none !important;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity .3s ease;
+            z-index: 2147483646;
+        }
+        .tmd-ring.tmd-ring-visible .grp-btn {
+            opacity: 1;
+        }
+        .tmd-ring .grp-btn:hover {
+            transform: none !important;
+        }
+    `;
+    document.head.appendChild(ringStyle);
+
+    const ringWrapper = document.createElement('div');
+    ringWrapper.className = 'tmd-ring';
+    document.documentElement.appendChild(ringWrapper);
+
+    let ringProgress = null;
+    function initRing() {
+        if (ringProgress) return ringProgress;
+        ringProgress = new RingProgress({
+            size: RING_SIZE,
+            duration: 300,
+            hold: 0,
+            autoStart: false
+        });
+        if (ringProgress.btn && ringProgress.btn.parentNode) {
+            ringWrapper.appendChild(ringProgress.btn);
+        }
+        return ringProgress;
+    }
+
+    function showRing() {
+        ringWrapper.classList.add('tmd-ring-visible');
+    }
+    function hideRing() {
+        ringWrapper.classList.remove('tmd-ring-visible');
+    }
+    function setRingProgress(p) {
+        if (!ringProgress) initRing();
+        const clamped = Math.max(0, Math.min(1, p));
+        ringProgress.set(clamped);
+    }
+    function ringComplete(delay = 800) {
+        setRingProgress(1);
+        setTimeout(() => {
+            hideRing();
+            setTimeout(() => setRingProgress(0), 300);
+        }, delay);
+    }
+    function ringFail(delay = 1000) {
+        setRingProgress(0);
+        setTimeout(() => hideRing(), delay);
+    }
+
+    // ============================================================
+    //  Promise 超时包装
+    // ============================================================
+    const withTimeout = (promise, ms, msg) =>
+        Promise.race([
+            promise,
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(msg || '操作超时')), ms)
+            )
+        ]);
+
+    // ============================================================
+    //  Worker 脚本加载
     // ============================================================
     let workerBlobUrl = null;
     let workerLoading = null;
@@ -57,6 +143,10 @@
                 onerror: () => reject(new Error('Worker 网络请求失败')),
                 ontimeout: () => reject(new Error('Worker 加载超时'))
             });
+        }).catch((e) => {
+            workerLoading = null;
+            workerBlobUrl = null;
+            throw e;
         });
 
         return workerLoading;
@@ -252,7 +342,6 @@
             img.src.includes('name=') ? img.src.replace(/name=.*/i, 'name=4096x4096') : img.src
         );
 
-        // 修复：去掉缩略图扩展名，生成正确的 video.twimg.com 地址
         const gifURLs = gifs.map(g => {
             if (g.src.startsWith('https://pbs.twimg.com/tweet_video_thumb/')) {
                 const id = g.src.split('?')[0].split('/').pop().replace(/\.[^.]+$/, '');
@@ -287,26 +376,46 @@
     };
 
     // ============================================================
-    //  下载
+    //  下载（不接收进度回调，仅用于下载）
     // ============================================================
-    const downloadBlob = async (url) => {
-        try {
-            const res = await gmFetch(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36' },
-                responseType: 'blob',
-                timeout: 60000
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const blob = await res.blob();
-            const { ext } = getMediaInfo(url);
-            const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm' };
-            const mime = mimeMap[ext.toLowerCase()] || blob.type || 'application/octet-stream';
-            return blob.type === mime ? blob : blob.slice(0, blob.size, mime);
-        } catch (e) {
-            console.error('[TMD] 下载失败:', url, e);
-            return null;
-        }
+    const MIME_MAP = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+        gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm'
     };
+
+    const downloadBlob = (url) => new Promise((resolve) => {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
+            },
+            responseType: 'blob',
+            timeout: 120000,
+            onload: (res) => {
+                if (res.status < 200 || res.status >= 300) {
+                    console.error('[TMD] 下载失败:', url, res.status);
+                    resolve(null);
+                    return;
+                }
+                let blob = res.response;
+                if (!(blob instanceof Blob)) blob = new Blob([blob]);
+                const { ext } = getMediaInfo(url);
+                const mime = MIME_MAP[ext.toLowerCase()] || blob.type || 'application/octet-stream';
+                if (blob.type !== mime) blob = blob.slice(0, blob.size, mime);
+                resolve(blob);
+            },
+            onerror: (e) => {
+                console.error('[TMD] 下载错误:', url, e);
+                resolve(null);
+            },
+            ontimeout: () => {
+                console.error('[TMD] 下载超时:', url);
+                resolve(null);
+            },
+            onabort: () => resolve(null)
+        });
+    });
 
     const triggerSave = (blob, filename) => {
         const a = document.createElement('a');
@@ -319,10 +428,10 @@
     };
 
     // ============================================================
-    //  自适应 GIF 参数（固定 10fps，最长 20 秒，自适应分辨率）
+    //  自适应 GIF 参数
     // ============================================================
     const autoGifParams = (duration, srcWidth) => {
-        const fps = 10; // 固定 10fps，保证人眼流畅
+        const fps = 10;
         let maxWidth;
 
         if (duration <= 2)       maxWidth = 480;
@@ -331,7 +440,7 @@
         else if (duration <= 15) maxWidth = 280;
         else                     maxWidth = 240;
 
-        const quality = 30; // 最大压缩
+        const quality = 30;
         const totalFrames = Math.min(FRAME_BUDGET, Math.round(fps * duration));
 
         return {
@@ -343,7 +452,7 @@
     };
 
     // ============================================================
-    //  视频 → GIF（gif.js.optimized 编码）
+    //  视频 → GIF（进度仅反映转换阶段）
     // ============================================================
     const convertToGif = async (videoBlob, onProgress) => {
         const workerScript = await getWorkerUrl();
@@ -384,7 +493,7 @@
             const GIFClass = window.GIF || GIF;
             if (!GIFClass) throw new Error('GIF 库未正确加载');
 
-            return new Promise((resolve, reject) => {
+            return await new Promise((resolve, reject) => {
                 const gif = new GIFClass({
                     workers: 2,
                     quality: params.quality,
@@ -395,32 +504,58 @@
                     background: '#fff'
                 });
 
+                // 编码阶段占整体 60%~100%
                 gif.on('progress', (p) => {
-                    if (onProgress) onProgress(0.5 + p * 0.5);
+                    if (onProgress) onProgress(0.6 + p * 0.4);
                 });
 
                 gif.on('finished', (blob) => {
                     console.log(`[TMD] GIF 完成: ${(blob.size / 1024).toFixed(1)} KB`);
+                    if (onProgress) onProgress(1);
                     resolve(blob);
                 });
 
                 gif.on('error', (err) => {
-                    reject(err);
+                    reject(err instanceof Error ? err : new Error(String(err)));
+                });
+
+                const seekTo = (time) => new Promise((resolve) => {
+                    const timer = setTimeout(() => {
+                        video.removeEventListener('seeked', handler);
+                        console.warn('[TMD] seek 超时，跳过该帧');
+                        resolve(false);
+                    }, SEEK_TIMEOUT);
+
+                    const handler = () => {
+                        clearTimeout(timer);
+                        video.removeEventListener('seeked', handler);
+                        resolve(true);
+                    };
+
+                    video.addEventListener('seeked', handler);
+                    try {
+                        video.currentTime = time;
+                    } catch (e) {
+                        clearTimeout(timer);
+                        video.removeEventListener('seeked', handler);
+                        resolve(false);
+                    }
                 });
 
                 const addFrames = async () => {
                     for (let i = 0; i < params.totalFrames; i++) {
                         const t = Math.min(i * frameInterval, duration - 0.001);
-                        video.currentTime = t;
-                        await new Promise(res => {
-                            const handler = () => { video.removeEventListener('seeked', handler); res(); };
-                            video.addEventListener('seeked', handler);
-                        });
+                        await seekTo(t);
 
-                        ctx.drawImage(video, 0, 0, params.width, dstH);
-                        gif.addFrame(ctx, { copy: true, delay: Math.round(1000 / params.fps) });
+                        try {
+                            ctx.drawImage(video, 0, 0, params.width, dstH);
+                            gif.addFrame(ctx, { copy: true, delay: Math.round(1000 / params.fps) });
+                        } catch (e) {
+                            console.warn('[TMD] 抽帧失败，跳过:', e);
+                        }
 
-                        if (onProgress) onProgress((i + 1) / params.totalFrames * 0.5);
+                        // 抽帧阶段占整体 0%~60%
+                        if (onProgress) onProgress((i + 1) / params.totalFrames * 0.6);
                     }
                     gif.render();
                 };
@@ -454,7 +589,7 @@
             ).pop()?.parentNode;
             if (!shareBtn) return;
 
-            // ---- 主下载按钮 ----
+            // ---- 主下载按钮（图片/视频下载，不用进度环） ----
             const btnDown = shareBtn.cloneNode(true);
             btnDown.classList.add('tmd-down', 'download');
             const btnEl = btnDown.querySelector('button');
@@ -492,7 +627,7 @@
 
             group.insertBefore(btnDown, shareBtn.nextSibling);
 
-            // ---- GIF 按钮（仅有视频/GIF 时显示） ----
+            // ---- GIF 按钮（仅有视频/GIF 时显示，进度环只反映转换） ----
             const { gifs, videos } = getMediaElements(cell);
             if (!gifs.length && !videos.length) return;
 
@@ -524,22 +659,44 @@
                 if (!targets.length) { alert('这条推文里没有 GIF 或视频'); setStatus(btnGif, 'download'); return; }
 
                 try {
-                    const blobs = (await Promise.all(targets.map(t => downloadBlob(t.url)))).filter(Boolean);
-                    if (blobs.length !== targets.length) throw new Error('部分媒体下载失败');
+                    initRing();
+                    setRingProgress(0);
+                    showRing();
 
+                    // ---------- 阶段一：下载（不显示进度，进度保持 0） ----------
+                    const blobs = [];
+                    for (let i = 0; i < targets.length; i++) {
+                        const b = await downloadBlob(targets[i].url);
+                        if (b) {
+                            blobs.push(b);
+                        } else {
+                            console.warn('[TMD] 跳过下载失败的媒体:', targets[i].url);
+                        }
+                    }
+                    if (!blobs.length) throw new Error('所有媒体下载失败');
+
+                    // ---------- 阶段二：转换（0~100%，进度环只反映转换） ----------
                     for (let i = 0; i < blobs.length; i++) {
-                        const gifBlob = await convertToGif(blobs[i], (p) => {
-                            if (gifBtn) gifBtn.title = `GIF 转换中 ${Math.round(p * 100)}%`;
-                        });
+                        const gifBlob = await withTimeout(
+                            convertToGif(blobs[i], (p) => {
+                                // 多文件时按整体折算
+                                const overall = (i + p) / blobs.length;
+                                setRingProgress(overall);
+                            }),
+                            GIF_TIMEOUT,
+                            'GIF 转换超时'
+                        );
                         triggerSave(gifBlob, generateFilename(el, 'gif', i + 1, 'gif'));
                         if (blobs.length > 1) await new Promise(r => setTimeout(r, 500));
                     }
 
+                    ringComplete(900);
                     setStatus(btnGif, 'completed');
                     setTimeout(() => setStatus(btnGif, 'download'), 2000);
                 } catch (err) {
                     console.error('[TMD] GIF 失败:', err);
                     alert('GIF 转换失败：' + err.message);
+                    ringFail(1200);
                     setStatus(btnGif, 'failed');
                     setTimeout(() => setStatus(btnGif, 'download'), 3000);
                 }
