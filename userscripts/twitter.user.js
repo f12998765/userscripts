@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X 精简版(Minimal × Pake 合并)
 // @namespace    https://github.com/typefully/minimal-twitter
-// @version      1.3.0
-// @description  去广告与抽屉、侧栏悬停显示文字+图标居中+延迟淡入、时间线 800px、顶部原生固定、右上角常驻搜索栏、媒体/私信布局保护;脚本内数组配置左侧菜单显隐。纯 CSS 为主,页面加载前注入,无闪烁。
+// @version      1.3.1
+// @description  去广告与抽屉、侧栏悬停显示文字+图标居中、时间线 800px、顶部原生固定、右上角常驻搜索栏、媒体/私信布局保护;脚本内数组配置左侧菜单显隐。纯 CSS 为主,页面加载前注入,无闪烁。
 // @author       Minimal Theme (Typefully, MIT) × Pake (tw93, GPL-3.0) 合并精简
 // @license      MIT
 // @match        https://x.com/*
@@ -20,8 +20,8 @@
    * 配置区(按需修改,改完保存刷新即生效)
    * ===================================================== */
 
-  // 1. 左侧栏延迟显示的秒数:避开加载初期的骨架/推广卡闪现,0 = 立即显示
-  const SIDEBAR_REVEAL_DELAY = 2;
+  // 1. 左侧栏延迟显示的秒数,0 = 立即显示(已默认关闭)
+  const SIDEBAR_REVEAL_DELAY = 0;
 
   // 2. 左侧导航菜单显隐,把 key 填进对应数组即可
   //    可用 key:
@@ -35,18 +35,11 @@
   const HIDDEN_ITEMS = ["grok", "premium", "lists"]; // 隐藏
 
   // 3. 额外隐藏:没有固定 key 的杂项入口,直接写选择器
-  //    (依据真实 DOM 校准:优先 data-testid / href;
-  //     中文界面的 aria-label 是中文,不要依赖英文 aria-label)
   const EXTRA_HIDDEN_SELECTORS = [
-    // 添加关注(/i/connect_people)
     'header[role="banner"] a[data-testid="AppTabBar_Follow_Link"]',
-    // 历史(/i/history)
     'header[role="banner"] a[href*="/i/history"][role="link"]',
-    // 创作者工作室(/i/jf/creators/studio)
     'header[role="banner"] a[href*="creators/studio"][role="link"]',
-    // 左上角 X Logo
     'header[role="banner"] h1[role="heading"]',
-    // 侧栏推广/订阅入口(防止加载期闪现灰底卡片)
     'header[role="banner"] a[href*="/i/verified-orgs-signup"][role="link"]',
     'header[role="banner"] a[href*="supergrok"][role="link"]',
     'header[role="banner"] a[href*="/i/grok/super"][role="link"]',
@@ -54,12 +47,13 @@
     'header[role="banner"] a[href*="/i/premium_sign_up"][role="link"]',
   ];
 
+  // 4. 搜索框展开后的宽度(px)。原值 374 会压住时间线,收敛到 260
+  const SEARCH_EXPANDED_WIDTH = 260;
+
   /* =====================================================
    * 以下为实现,一般不需要改动
    * ===================================================== */
 
-  // key → CSS 选择器(全部限定在 header[role="banner"] 内,
-  // 避免误伤时间线正文里的同类链接)
   const SIDEBAR_SELECTORS = {
     home: '[data-testid="AppTabBar_Home_Link"]',
     explore: '[data-testid="AppTabBar_Explore_Link"]',
@@ -95,8 +89,7 @@
       display: none !important;
     }
 
-    /* 3. 右侧栏整体隐藏,搜索栏单独浮出到右上角
-          (visibility 可被子元素覆盖,Minimal 的核心技巧) */
+    /* 3. 右侧栏整体隐藏,搜索栏单独浮出到右上角 */
     [data-testid="sidebarColumn"] {
       visibility: hidden;
       width: 0;
@@ -116,8 +109,9 @@
       [data-testid="sidebarColumn"] form[role="search"] input[role="combobox"] {
         width: 150px;
       }
+      /* 展开宽度收敛,避免压住主内容(原 374px 会重叠 70px) */
       [data-testid="sidebarColumn"] form[role="search"]:focus-within {
-        width: 374px;
+        width: ${SEARCH_EXPANDED_WIDTH}px;
         backdrop-filter: blur(12px);
       }
       [data-testid="sidebarColumn"] form[role="search"] input:focus {
@@ -128,12 +122,11 @@
       }
       div[style="left: -8px; width: 306px;"] {
         left: unset;
-        width: 374px;
+        width: ${SEARCH_EXPANDED_WIDTH}px;
       }
     }
 
-    /* 4. 时间线 800px + 居中(≥988px)
-          顶部固定依赖 X 原生 sticky,不做任何干预 */
+    /* 4. 时间线 800px + 居中(≥988px) */
     @media only screen and (min-width: 988px) {
       main[role="main"] {
         align-items: center;
@@ -144,7 +137,6 @@
         max-width: 800px !important;
         margin: 0 auto;
       }
-      /* 内层宽度放开;排除私信容器,保护消息气泡与图片/视频布局 */
       [data-testid="primaryColumn"] > div > div:last-child,
       [data-testid="primaryColumn"]
         > div
@@ -162,21 +154,18 @@
         left: 0;
       }
 
-      /* 图标列垂直居中 */
       header[role="banner"] > div > div > div {
         justify-content: center !important;
         padding-top: 0;
         overflow-x: hidden;
       }
 
-      /* 底部账号按钮贴齐浮动发推按钮的高度节奏 */
       header[role="banner"] > div > div > div > div:last-child {
         margin-bottom: 0 !important;
       }
       [data-testid="SideNav_AccountSwitcher_Button"] {
         bottom: 12px;
       }
-      /* 项目过多时可滚动,避免溢出 */
       header[role="banner"] > div > div > div > div:first-child {
         flex-shrink: 1;
         overflow-y: auto;
@@ -193,12 +182,11 @@
       [data-testid="SideNav_AccountSwitcher_Button"]:hover > div:not(:first-child) {
         opacity: 1;
       }
-      /* 悬停时给整列加毛玻璃底,保证文字可读性 */
       header[role="banner"] nav[role="navigation"]:hover > * > div {
         backdrop-filter: blur(12px);
       }
 
-      /* 扩大悬停热区:标签隐藏时右侧 40px 内也能触发(Pake 技巧) */
+      /* 悬停热区:收回到链接内部,避免撑破 overflow 容器产生横向滚动条 */
       header[role="banner"] nav[role="navigation"] > a {
         position: relative;
       }
@@ -206,12 +194,12 @@
         content: "";
         position: absolute;
         top: 0;
-        right: -40px;
+        right: 0;
         bottom: 0;
         left: 0;
       }
 
-      /* 发推按钮悬浮到右下角(fixed 不受父级 overflow 裁剪) */
+      /* 发推按钮悬浮到右下角 */
       [data-testid="SideNav_NewTweet_Button"] {
         position: fixed;
         right: 16px;
@@ -219,15 +207,27 @@
       }
     }
 
-    /* 6. 1000–1265px 中间断点:导航固定后补回占位,防止遮挡内容 */
+    /* 6. 1000–1265px 中间断点:导航固定后补回占位 */
     @media only screen and (min-width: 1000px) and (max-width: 1265px) {
       body {
         padding-left: 88px;
       }
     }
+
+    /* 7. 左侧栏:消除横向溢出(双保险) */
+    header[role="banner"] > div > div > div > div:first-child {
+      overflow-x: hidden !important;
+      overflow-y: auto !important;
+      scrollbar-width: none !important;
+    }
+    header[role="banner"] > div > div > div > div:first-child::-webkit-scrollbar {
+      width: 0 !important;
+      height: 0 !important;
+      display: none !important;
+    }
   `.trim().replace(/\n\s+/g, "\n");
 
-  /* ---- 左侧栏延迟淡入 ---- */
+  /* ---- 左侧栏延迟淡入(默认关闭) ---- */
 
   const revealCss =
     SIDEBAR_REVEAL_DELAY > 0
@@ -242,7 +242,6 @@
     `.trim()
       : "";
 
-  // document-start 阶段 <head> 尚未生成,先挂到 <html> 上防闪烁
   if (typeof GM_addStyle === "function") {
     GM_addStyle(css + "\n" + revealCss);
   } else {
@@ -251,9 +250,8 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  /* ---- 左侧菜单隐藏(独立 style 标签,与主样式分离) ---- */
+  /* ---- 左侧菜单隐藏(独立 style 标签) ---- */
 
-  // 按配置生成隐藏规则(SHOWN_ITEMS 优先级高于 HIDDEN_ITEMS)
   function buildSidebarHideCss() {
     const byKey = Object.keys(SIDEBAR_SELECTORS)
       .filter((key) => HIDDEN_ITEMS.includes(key) && !SHOWN_ITEMS.includes(key))
@@ -269,18 +267,13 @@
     (document.head || document.documentElement).appendChild(el);
   })();
 
-  /* ---- 加载期兜底:拦截侧栏异步插入的推广/订阅卡片 ----
-   * Premium / SuperGrok 等卡片插在账号按钮上方,数据返回前
-   * 显示为灰色骨架条,几秒后被 X 自行移除。
-   * 这里在插入瞬间判定并隐藏整个块。 */
+  /* ---- 加载期兜底:拦截侧栏异步插入的推广/订阅卡片 ---- */
 
   (function startPromoCardPruner() {
     const attach = () => {
       const header = document.querySelector('header[role="banner"]');
       if (!header) return false;
 
-      // 判定特征:块内含推广类链接,但不是主导航的组成部分
-      // (导航里同样有 grok/premium 链接,必须排除)
       const looksLikePromo = (el) => {
         if (!(el instanceof HTMLElement)) return false;
         const hasPromo = el.querySelector(
