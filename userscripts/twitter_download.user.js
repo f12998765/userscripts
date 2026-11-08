@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X/Twitter 媒体下载
-// @version      0.0.4
-// @description  下载 X/Twitter 图片、视频、GIF，视频可转换为 GIF（10fps 流畅，最长 20 秒，自适应分辨率），GIF 转换进度以右下角圆环显示
+// @version      0.1.1
+// @description  下载 X/Twitter 图片、视频、GIF，视频可转换为 GIF（10fps 流畅，最长 20 秒，自适应分辨率），GIF 转换进度以右下角圆环显示；图片右键菜单增加「复制图片」
 // @license      MIT
 // @match        https://twitter.com/*
 // @match        https://x.com/*
@@ -13,6 +13,7 @@
 // @connect      cdn.jsdelivr.net
 // @connect      raw.githubusercontent.com
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
 // @require      https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js
 // @require      https://raw.githubusercontent.com/f12998765/widgets/refs/heads/main/RingProgress.js
 // @run-at       document-idle
@@ -577,6 +578,259 @@
     };
 
     // ============================================================
+    //  【新增】复制图片 —— 追加到 X 的图片右键菜单
+    // ============================================================
+    const IMG_COPY = {
+        menuItemText: '复制图片',
+        // X 原生「复制照片链接」项的 testid，用它定位菜单
+        anchorTestId: 'copyPhotoLinkContextMenuItem',
+        attrInjected: 'data-tmd-img-copy',
+        pendingUrl: null,      // 已升级为最高分辨率
+        originalUrl: null,     // 页面上的原始地址（高清版失败时回退用）
+        observer: null
+    };
+
+    // ---- 把 X 的缩略图地址升级为最高分辨率 ----
+    // X 的图片 URL 形如 https://pbs.twimg.com/media/XXX?format=jpg&name=360x360
+    // name= 参数只是 CDN 的缩放提示，可以安全替换为 4096x4096
+    const upgradeImageUrl = (url) => {
+        if (!url) return url;
+        // 只处理 X 媒体图，其它站点的图片原样返回
+        if (!/^https?:\/\/pbs\.twimg\.com\/media\//.test(url)) return url;
+
+        const qIndex = url.indexOf('?');
+        const base = qIndex < 0 ? url : url.slice(0, qIndex);
+        const query = qIndex < 0 ? '' : url.slice(qIndex + 1);
+
+        // 无查询串：补上 format 与尺寸
+        if (!query) {
+            const ext = (base.match(/\.([a-z0-9]+)$/i) || [])[1] || 'jpg';
+            return `${base}?format=${ext}&name=4096x4096`;
+        }
+
+        // 有查询串：替换或追加 name 参数
+        const params = query.split('&').filter(Boolean);
+        const idx = params.findIndex(p => /^name=/i.test(p));
+        if (idx >= 0) params[idx] = 'name=4096x4096';
+        else params.push('name=4096x4096');
+
+        return `${base}?${params.join('&')}`;
+    };
+
+    // ---- 右键命中图片时记录地址 ----
+    const resolveImageUrl = (target) => {
+        if (!target || !target.closest) return null;
+
+        // 普通 <img>
+        if (target.tagName === 'IMG') {
+            return (target.currentSrc || target.src || '').trim() || null;
+        }
+        const img = target.closest('img');
+        if (img) return (img.currentSrc || img.src || '').trim() || null;
+
+        // background-image 伪图片
+        const bgEl = target.closest('div[style*="background-image"], a[style*="background-image"]');
+        if (bgEl) {
+            const m = getComputedStyle(bgEl).backgroundImage.match(/url\(["']?(.+?)["']?\)/);
+            if (m) return m[1].trim();
+        }
+        return null;
+    };
+
+    const onImgContextMenu = (e) => {
+        const url = resolveImageUrl(e.target);
+        if (url) {
+            const httpsUrl = url.replace(/^http:/, 'https:');
+            IMG_COPY.originalUrl = httpsUrl;
+            IMG_COPY.pendingUrl = upgradeImageUrl(httpsUrl);
+        }
+    };
+
+    // ---- URL 转 PNG Blob（CORS 重新加载，规避 canvas 污染） ----
+    const urlToPngBlob = async (url) => {
+        if (!url) throw new Error('没有图片地址');
+        url = url.replace(/^http:/, 'https:');
+
+        const load = (useCors, src) => new Promise((resolve, reject) => {
+            const im = new Image();
+            if (useCors) im.crossOrigin = 'anonymous';
+            im.onload = () => resolve(im);
+            im.onerror = () => reject(new Error(useCors ? 'CORS 拒绝' : '图片加载失败'));
+            im.src = src;
+        });
+
+        // 优先带 CORS 加载；失败再回退（回退后 canvas 可能被污染）
+        // 再失败则退回原始地址（某些图不存在 4096 尺寸）
+        const original = IMG_COPY.originalUrl;
+        let im;
+        try {
+            im = await load(true, url);
+        } catch (e1) {
+            if (original && original !== url) {
+                try { im = await load(true, original); }
+                catch { im = await load(false, original); }
+            } else {
+                im = await load(false, url);
+            }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = im.naturalWidth;
+        canvas.height = im.naturalHeight;
+        if (!canvas.width || !canvas.height) throw new Error('图片尺寸为 0（可能未加载完成）');
+
+        canvas.getContext('2d').drawImage(im, 0, 0);
+
+        const png = await new Promise((resolve, reject) => {
+            try {
+                canvas.toBlob(
+                    b => b ? resolve(b) : reject(new Error('canvas 被污染，无法导出')),
+                    'image/png'
+                );
+            } catch (e) {
+                reject(e);
+            }
+        });
+        return { png, width: canvas.width, height: canvas.height };
+    };
+
+    const copyImageToClipboard = async (url) => {
+        const { png, width, height } = await urlToPngBlob(url);
+
+        // 优先用 Clipboard API 写图片（保留 PNG 原始质量）
+        if (navigator.clipboard && window.ClipboardItem) {
+            await navigator.clipboard.write([
+                new ClipboardItem({ 'image/png': png })
+            ]);
+            return { width, height, bytes: png.size, mode: 'clipboard-api' };
+        }
+
+        // 兜底：GM_setClipboard 只能写文本，退化为复制图片地址
+        if (typeof GM_setClipboard === 'function') {
+            GM_setClipboard(url, 'text');
+            return { width, height, bytes: png.size, mode: 'url-fallback' };
+        }
+        throw new Error('当前环境不支持复制图片');
+    };
+
+    // ---- 轻提示 ----
+    const toast = (text, isError) => {
+        const el = document.createElement('div');
+        el.textContent = text;
+        el.style.cssText = `
+            position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%);
+            z-index: 2147483647; pointer-events: none;
+            background: ${isError ? '#f4212e' : '#0f1419'}; color: #fff;
+            padding: 10px 18px; border-radius: 8px;
+            font: 14px/1.3 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+            box-shadow: 0 4px 16px rgba(0,0,0,.25);
+            opacity: 0; transition: opacity .18s ease;
+        `;
+        document.documentElement.appendChild(el);
+        requestAnimationFrame(() => { el.style.opacity = '1'; });
+        setTimeout(() => {
+            el.style.opacity = '0';
+            setTimeout(() => el.remove(), 250);
+        }, isError ? 2600 : 1400);
+    };
+
+    // ---- 复制动作 ----
+    const doCopyImage = async (closeMenu) => {
+        const url = IMG_COPY.pendingUrl;
+        if (closeMenu) closeMenu();
+        try {
+            const r = await copyImageToClipboard(url);
+            toast(r.mode === 'url-fallback'
+                ? '环境不支持复制图片，已复制图片地址'
+                : `图片已复制 ${r.width}×${r.height}`);
+            console.log('[TMD] 复制图片成功:', r, url);
+        } catch (err) {
+            console.warn('[TMD] 复制图片失败:', err, url);
+            toast('复制图片失败：' + err.message, true);
+        }
+    };
+
+    // ---- 把菜单项插入 X 的图片右键菜单 ----
+    const injectMenuItem = () => {
+        const anchor = document.querySelector(
+            `[data-testid="${IMG_COPY.anchorTestId}"]`
+        );
+        if (!anchor) return;
+
+        // 直接取原生项的父容器（即 div[data-testid=Dropdown]），保证同层同序
+        const container = anchor.parentElement;
+        if (!container) return;
+
+        // 去重：容器里已有就跳过
+        if (container.querySelector(`[${IMG_COPY.attrInjected}]`)) return;
+
+        // X 会复用 DOM 节点：清掉遗留在其它位置的旧项，避免累积
+        document.querySelectorAll(`[${IMG_COPY.attrInjected}]`).forEach(el => el.remove());
+
+        // 克隆原生项，完全复用 X 的样式与结构
+        const nativeItem = anchor.cloneNode(true);
+        nativeItem.removeAttribute('data-testid');
+
+        // 清掉 X 的 React 事件绑定痕迹
+        nativeItem.querySelectorAll('[data-testid]').forEach(n => n.removeAttribute('data-testid'));
+
+        // 替换文字：只改最内层的 span，保留排版结构
+        const spans = nativeItem.querySelectorAll('span');
+        if (spans.length) {
+            spans[spans.length - 1].textContent = IMG_COPY.menuItemText;
+        } else {
+            nativeItem.textContent = IMG_COPY.menuItemText;
+        }
+
+        // 移除可能残留的图标（原生项本就无图标，这里防御性处理）
+        nativeItem.querySelectorAll('svg').forEach(s => s.remove());
+
+        nativeItem.setAttribute(IMG_COPY.attrInjected, '1');
+        nativeItem.setAttribute('role', 'menuitem');
+        nativeItem.setAttribute('tabindex', '0');
+
+        // 点击处理：捕获阶段拦截，避免触达 X 的 React 处理器。
+        // 只绑 click —— 同时绑 mouseup 会在真实点击时触发两次。
+        let fired = false;
+        nativeItem.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (fired) return;
+            fired = true;
+            // 关闭 X 的菜单：点一下 body 让它自己收走
+            document.body.click();
+            doCopyImage();
+        }, true);
+
+        // 插到原生项前面（与 Chrome 原生菜单一致：自定义项在系统项之前）
+        container.insertBefore(nativeItem, anchor);
+    };
+
+    // ---- 监听菜单出现 ----
+    const startImgCopy = () => {
+        document.addEventListener('contextmenu', onImgContextMenu, true);
+
+        // 右键后经微任务立即尝试注入（菜单若已在 DOM 里则马上补）
+        document.addEventListener('contextmenu', () => {
+            queueMicrotask(injectMenuItem);
+        }, true);
+
+        IMG_COPY.observer = new MutationObserver((mutations) => {
+            // 只在新增节点时同步注入，避免任何延迟
+            for (const m of mutations) {
+                if (m.addedNodes.length) {
+                    injectMenuItem();
+                    return;
+                }
+            }
+        });
+        IMG_COPY.observer.observe(document.body, { childList: true, subtree: true });
+    };
+
+    startImgCopy();
+
+    // ============================================================
     //  创建按钮
     // ============================================================
     const createButtons = (cell) => {
@@ -720,6 +974,14 @@
     .tmd-gif.download g.download, .tmd-gif.loading g.loading, .tmd-gif.failed g.failed, .tmd-gif.completed g.completed { display: unset; }
     .tmd-down.loading svg g.loading, .tmd-gif.loading svg g.loading { animation: spin 1s linear infinite !important; transform-box: fill-box; transform-origin: center; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    /* ---- 右键菜单：去掉过渡/动画，加快弹出 ---- */
+    [role="menu"], [role="menu"] *, [role="menuitem"], [role="menuitem"] * {
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+    }
     `;
     const style = document.createElement('style');
     style.id = 'twdlcss';
